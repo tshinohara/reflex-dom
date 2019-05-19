@@ -146,8 +146,9 @@ import GHCJS.DOM.Element (getScrollTop, removeAttribute, removeAttributeNS, setA
 import GHCJS.DOM.EventM (EventM, event, on)
 import GHCJS.DOM.KeyboardEvent as KeyboardEvent
 import GHCJS.DOM.MouseEvent
+import GHCJS.DOM.CompositionEvent as CompositionEvent
 import GHCJS.DOM.Node (appendChild_, getOwnerDocumentUnchecked, getParentNodeUnchecked, setNodeValue, toNode)
-import GHCJS.DOM.Types (liftJSM, askJSM, runJSM, JSM, MonadJSM, FocusEvent, IsElement, IsEvent, IsNode, KeyboardEvent, Node, TouchEvent, WheelEvent, uncheckedCastTo, ClipboardEvent)
+import GHCJS.DOM.Types (liftJSM, askJSM, runJSM, JSM, MonadJSM, FocusEvent, IsElement, IsEvent, IsNode, KeyboardEvent, Node, TouchEvent, WheelEvent, uncheckedCastTo, ClipboardEvent, CompositionEvent)
 import GHCJS.DOM.UIEvent
 import Language.Javascript.JSaddle (call, eval)
 import Reflex.Adjustable.Class
@@ -176,6 +177,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import qualified GHCJS.DOM as DOM
+import qualified GHCJS.DOM.EventTargetClosures as Events ( unsafeEventName )
 import qualified GHCJS.DOM.DocumentAndElementEventHandlers as Events
 import qualified GHCJS.DOM.DocumentOrShadowRoot as Document
 import qualified GHCJS.DOM.Element as Element
@@ -2152,6 +2154,9 @@ type family EventType en where
   EventType 'ChangeTag = DOM.Event
   EventType 'ClickTag = MouseEvent
   EventType 'ContextmenuTag = MouseEvent
+  EventType 'CompositionstartTag = CompositionEvent
+  EventType 'CompositionupdateTag = CompositionEvent
+  EventType 'CompositionendTag = CompositionEvent
   EventType 'DblclickTag = MouseEvent
   EventType 'DragTag = MouseEvent
   EventType 'DragendTag = MouseEvent
@@ -2198,6 +2203,9 @@ type family EventType en where
 defaultDomEventHandler :: IsElement e => e -> EventName en -> EventM e (EventType en) (Maybe (EventResult en))
 defaultDomEventHandler e evt = fmap (Just . EventResult) $ case evt of
   Click -> return ()
+  Compositionstart -> return ()
+  Compositionupdate -> getCompositionData
+  Compositionend -> getCompositionData
   Dblclick -> getMouseEventCoords
   Keypress -> getKeyEvent
   Scroll -> fromIntegral <$> getScrollTop e
@@ -2248,6 +2256,9 @@ defaultDomEventHandler e evt = fmap (Just . EventResult) $ case evt of
 defaultDomWindowEventHandler :: DOM.Window -> EventName en -> EventM DOM.Window (EventType en) (Maybe (EventResult en))
 defaultDomWindowEventHandler w evt = fmap (Just . EventResult) $ case evt of
   Click -> return ()
+  Compositionstart -> return ()
+  Compositionupdate -> getCompositionData
+  Compositionend -> getCompositionData
   Dblclick -> getMouseEventCoords
   Keypress -> getKeyEvent
   Scroll -> Window.getScrollY w
@@ -2299,6 +2310,9 @@ withIsEvent :: EventName en -> (IsEvent (EventType en) => r) -> r
 withIsEvent en r = case en of
   Click -> r
   Dblclick -> r
+  Compositionstart -> r
+  Compositionupdate -> r
+  Compositionend -> r
   Keypress -> r
   Scroll -> r
   Keydown -> r
@@ -2351,6 +2365,9 @@ showEventName en = case en of
   Change -> "Change"
   Click -> "Click"
   Contextmenu -> "Contextmenu"
+  Compositionstart -> "Compositionstart"
+  Compositionupdate -> "Compositionupdate"
+  Compositionend -> "Compositionend"
   Dblclick -> "Dblclick"
   Drag -> "Drag"
   Dragend -> "Dragend"
@@ -2402,6 +2419,22 @@ instance DOM.IsEventTarget ElementEventTarget
 instance DOM.IsGlobalEventHandlers ElementEventTarget
 instance DOM.IsDocumentAndElementEventHandlers ElementEventTarget
 
+-- TODO: ghcjd-dom doesn't offer CompositionEvent's EventNames
+_events_compositionStart
+  :: (DOM.IsGlobalEventHandlers self, DOM.IsEventTarget self)
+  => DOM.EventName self CompositionEvent
+_events_compositionStart = Events.unsafeEventName (DOM.toJSString ("compositionstart" :: String))
+
+_events_compositionUpdate
+  :: (DOM.IsGlobalEventHandlers self, DOM.IsEventTarget self)
+  => DOM.EventName self CompositionEvent
+_events_compositionUpdate = Events.unsafeEventName (DOM.toJSString ("compositionupdate" :: String))
+
+_events_compositionEnd
+  :: (DOM.IsGlobalEventHandlers self, DOM.IsEventTarget self)
+  => DOM.EventName self CompositionEvent
+_events_compositionEnd = Events.unsafeEventName (DOM.toJSString ("compositionend" :: String))
+
 {-# INLINABLE elementOnEventName #-}
 elementOnEventName :: IsElement e => EventName en -> e -> EventM e (EventType en) () -> JSM (JSM ())
 elementOnEventName en e_ = let e = ElementEventTarget (DOM.toElement e_) in case en of
@@ -2410,6 +2443,9 @@ elementOnEventName en e_ = let e = ElementEventTarget (DOM.toElement e_) in case
   Change -> on e Events.change
   Click -> on e Events.click
   Contextmenu -> on e Events.contextMenu
+  Compositionstart -> on e _events_compositionStart
+  Compositionupdate -> on e _events_compositionUpdate
+  Compositionend -> on e _events_compositionEnd
   Dblclick -> on e Events.dblClick
   Drag -> on e Events.drag
   Dragend -> on e Events.dragEnd
@@ -2460,6 +2496,9 @@ windowOnEventName en e = case en of
   Change -> on e Events.change
   Click -> on e Events.click
   Contextmenu -> on e Events.contextMenu
+  Compositionstart -> on e _events_compositionStart
+  Compositionupdate -> on e _events_compositionUpdate
+  Compositionend -> on e _events_compositionEnd
   Dblclick -> on e Events.dblClick
   Drag -> on e Events.drag
   Dragend -> on e Events.dragEnd
@@ -2543,6 +2582,12 @@ wrapDomEventsMaybe target handlers onEventName = do
   e <- lift $ newFanEventWithTrigger $ \(WrapArg en) -> withIsEvent en
     (((`runJSM` ctx) <$>) . (`runJSM` ctx) . subscribeDomEvent (onEventName en target) (handlers en) eventChan)
   return $! e
+
+{-# INLINABLE getCompositionData #-}
+getCompositionData :: EventM e CompositionEvent String
+getCompositionData = do
+  e <- event
+  CompositionEvent.getData e
 
 {-# INLINABLE getKeyEvent #-}
 getKeyEvent :: EventM e KeyboardEvent Word
